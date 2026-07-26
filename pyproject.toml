@@ -1,0 +1,13 @@
+[project]
+name = "spotify-to-ytm"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "certifi>=2026.7.22",
+    "python-fasthtml>=0.14.9",
+    "requests>=2.34.2",
+    "setuptools>=83.0.0",
+    "thefuzz>=0.22.1",
+    "undetected-chromedriver>=3.5.5",
+    "ytmusicapi==1.8.2",
+]

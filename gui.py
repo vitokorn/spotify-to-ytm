@@ -1,136 +1,249 @@
-from fasthtml.common import *
-from src.spotify import SpotifyManager
-from src.yt_music import YT_Music
-import threading
 import concurrent.futures
+import threading
 from dataclasses import dataclass
 from urllib.parse import quote, urlencode
 
-icon_link = Link(rel="stylesheet", href="https://www.nerdfonts.com/assets/css/webfont.css")
-app, rt = fast_app(debug=True,hdrs=(picolink,icon_link))
+from fasthtml.common import *
+from fasthtml.pico import picolink
+
+from src.spotify import SpotifyManager
+from src.yt_music import YT_Music, YTMusicAuthError
+
+icon_link = Link(
+    rel="stylesheet", href="https://www.nerdfonts.com/assets/css/webfont.css"
+)
+app, rt = fast_app(debug=True, hdrs=(picolink, icon_link))
 
 user_confirm_login_spot = is_initialized = False
-login_statuses = {
-    "status": None,
-    "type": None
-}
+login_statuses = {"status": None, "type": None}
 spot = yt = None
 loaded_library = False
 current_playlist_title = None
 
+
+def session_ready():
+    return is_initialized and spot is not None and yt is not None
+
+
+def loading_library_view():
+    return P(
+        Strong("Thanks for logging In!"),
+        Br(),
+        "Please wait while we load your spotify library...",
+        Br(),
+        "This usually takes 30-40 seconds.",
+        hx_trigger="every 1s",
+        hx_get="/is_library_built",
+        hx_swap="innerHTML",
+        hx_target=".main-view",
+    )
+
+
+def library_section(title, items):
+    if not items:
+        return None
+
+    return (
+        H3(f"{title} ({len(items)})"),
+        Ol(
+            *[
+                Li(
+                    A(
+                        item["name"],
+                        hx_get=f"/uri/{item['uri']}?title={quote(item['name'])}",
+                        hx_target=".main-view",
+                    )
+                )
+                for item in items
+            ]
+        ),
+    )
+
+
+def spotify_error_view(title, error):
+    if isinstance(error, str) and error.startswith("rate limited"):
+        message = f"Spotify is rate limiting this request; {error}."
+    else:
+        message = f"Spotify returned error {error}. Please restart the app session and try again."
+
+    return Div(
+        Titled(title),
+        P(message),
+        Button("Go Back", hx_get="/library", hx_target=".main-view"),
+    )
+
+
+def liked_songs_section():
+    if not spot.library.get("HasLikedSongs"):
+        return None
+
+    return (
+        H3("Misc."),
+        Ol(Li(A("Liked Songs", hx_get="/uri/liked", hx_target=".main-view"))),
+    )
+
+
 def start_sess():
-    global login_statuses,spot,yt
+    global is_initialized, login_statuses, spot, yt
+    is_initialized = False
     spot = SpotifyManager()
     yt = YT_Music()
+    is_initialized = True
     login_statuses["status"] = True
     login_statuses["type"] = None
 
 
 @app.get("/")
 def get():
-    return Titled("Spotify to YTM", 
+    return Titled(
+        "Spotify to YTM",
         Div(
             P("Welcome! Click the 'Start' button to start the application."),
-            Button("Start", hx_get="/start", hx_swap="innerHTML", hx_target=".main-view", id="start-button"),
-            cls="main-view"
-        )
+            Button(
+                "Start",
+                hx_get="/start",
+                hx_swap="innerHTML",
+                hx_target=".main-view",
+                id="start-button",
+            ),
+            cls="main-view",
+        ),
     )
+
 
 @app.get("/check_auth")
 def get():
     global login_statuses
     if login_statuses["status"] == None:
-        return P("A new browser window will open now.", Br(), "Please wait while we check your login status...",
-                 hx_get="/check_auth",
-                 hx_swap="outerHTML",
-                 hx_trigger="every 1s")
-    
+        return P(
+            "A new browser window will open now.",
+            Br(),
+            "Please wait while we check your login status...",
+            hx_get="/check_auth",
+            hx_swap="outerHTML",
+            hx_trigger="every 1s",
+        )
+
     elif login_statuses["type"] == "ytm":
-        return (H2("Login Instructions"),
-                Div(
-                    P("It seems you are logged in to Spotify but not to YouTube Music. Please follow the instructions below to login."),
-                    Ul(
-                        Li("Switch to the new chrome browser window that opened."),
-                        Li("It might have a single tab opened with YouTube Music."),
-                        Li("Do not close that tab, just open a new tab and login to your google account that you want to use for YouTube Music."),
-                        Li("After logging in, switch back to the original tab and click the 'Done' button below."),
+        return (
+            H2("Login Instructions"),
+            Div(
+                P(
+                    "It seems you are logged in to Spotify but not to YouTube Music. Please follow the instructions below to login."
+                ),
+                Ul(
+                    Li("Switch to the new chrome browser window that opened."),
+                    Li("It might have a single tab opened with YouTube Music."),
+                    Li(
+                        "Do not close that tab, just open a new tab and login to your google account that you want to use for YouTube Music."
+                    ),
+                    Li(
+                        "After logging in, switch back to the original tab and click the 'Done' button below."
                     ),
                 ),
-                Button("Done", hx_get="/user_confirm_login", id="done-button",hx_swap="innerHTML",hx_target=".main-view"))
-    
+            ),
+            Button(
+                "Done",
+                hx_get="/user_confirm_login",
+                id="done-button",
+                hx_swap="innerHTML",
+                hx_target=".main-view",
+            ),
+        )
+
     elif not login_statuses["status"]:
-        return (H2("Login Instructions"),
-                Div(
-                    P("It seems you are not logged in. Please follow the instructions below to login."),
-                    Ul(
-                        Li("Switch to the new chrome browser window that opened."),
-                        Li("It will have the Spotify login page already opened. Login with your Spotify account in that tab."),
-                        Li("After logging in to spotify, ", Strong("(Do not close the spotify tab!) "), "Open a new tab and login to your google account that you want to use for YouTube Music."),
-                        Li("After logging in to both accounts, switch back to the spotify tab and click the 'Done' button below."),
+        return (
+            H2("Login Instructions"),
+            Div(
+                P(
+                    "It seems you are not logged in. Please follow the instructions below to login."
+                ),
+                Ul(
+                    Li("Switch to the new chrome browser window that opened."),
+                    Li(
+                        "It will have the Spotify login page already opened. Login with your Spotify account in that tab."
+                    ),
+                    Li(
+                        "After logging in to spotify, ",
+                        Strong("(Do not close the spotify tab!) "),
+                        "Open a new tab and login to your google account that you want to use for YouTube Music.",
+                    ),
+                    Li(
+                        "After logging in to both accounts, switch back to the spotify tab and click the 'Done' button below."
                     ),
                 ),
-                Button("Done", hx_get="/user_confirm_login", id="done-button",hx_swap="innerHTML",hx_target=".main-view"))
-    
+            ),
+            Button(
+                "Done",
+                hx_get="/user_confirm_login",
+                id="done-button",
+                hx_swap="innerHTML",
+                hx_target=".main-view",
+            ),
+        )
+
     else:
         return RedirectResponse("/user_confirm_login")
 
 
 @app.get("/update_login")
-def get(status:bool=None, type:str=None):
+def get(status: bool = None, type: str = None):
     global login_statuses
     login_statuses["status"] = status
     login_statuses["type"] = type
 
+
 @app.get("/start")
 def get():
+    global is_initialized, loaded_library, login_statuses, spot, yt, user_confirm_login_spot
+    is_initialized = False
+    loaded_library = False
+    login_statuses = {"status": None, "type": None}
+    spot = yt = None
+    user_confirm_login_spot = False
     threading.Thread(target=start_sess, daemon=True).start()
     return RedirectResponse("/check_auth")
+
 
 @app.get("/check_user_confirmation")
 def get():
     global user_confirm_login_spot
     return {"confirmed": user_confirm_login_spot}
 
+
 @app.get("/user_confirm_login")
 def get():
     global user_confirm_login_spot
     user_confirm_login_spot = True
-    return P(Strong("Thanks for logging In!"), Br(), "Please wait while we load your spotify library...", Br(),
-            "This usually takes 30-40 seconds.",
-             hx_trigger="every 1s", 
-             hx_get="/is_library_built",
-             hx_swap="innerHTML",hx_target=".main-view")
+    return loading_library_view()
+
 
 @app.get("/is_library_built")
 def get():
-    global is_initialized
-    if not is_initialized:
-            return P(Strong("Thanks for logging In!"), Br(), "Please wait while we load your spotify library...", Br(),
-            "This usually takes 30-40 seconds.",
-             hx_trigger="every 1s", 
-             hx_get="/is_library_built",
-             hx_swap="innerHTML",hx_target=".main-view")
+    if not session_ready():
+        return loading_library_view()
     else:
         return RedirectResponse("/library")
+
 
 @app.get("/library")
 def get():
     global spot, loaded_library
+    if not session_ready():
+        return loading_library_view()
+
     library = spot.library
     layout = Div(
         P("Thanks for waiting! Your library is ready.") if not loaded_library else None,
-        P("Select any playlist to get started."),
-        H3("Misc."),
-        Ol(Li(A("Liked Songs", hx_get="/uri/liked", hx_target=".main-view"))),
-        H3("Albums"),
-        Ol(*[Li(A(al['name'],hx_get=f"/uri/{al['uri']}?title={al['name']}", hx_target=".main-view")) for al in library['Albums']]),
-        H3("Playlists"),
-        Ol(*[Li(A(pt['name'],hx_get=f"/uri/{pt['uri']}?title={pt['name']}", hx_target=".main-view")) for pt in library['Playlists']]),
-        H3("Artists"),
-        Ol(*[Li(A(at['name'],hx_get=f"/uri/{at['uri']}?title={at['name']}", hx_target=".main-view")) for at in library['Artists']])
+        P("Select something from your Spotify library to get started."),
+        liked_songs_section(),
+        library_section("Albums", library["Albums"]),
+        library_section("Playlists", library["Playlists"]),
+        library_section("Artists", library["Artists"]),
     )
     loaded_library = True
     return Title("Spotify Library"), layout
+
 
 @app.get("/initialized")
 def get():
@@ -138,31 +251,42 @@ def get():
     is_initialized = True
     return {"status": "success"}
 
+
 @app.get("/uri/{uri}")
-def get(uri:str, title:str="Liked Songs"):
+def get(uri: str, title: str = "Liked Songs"):
     global current_playlist_title
+    if not session_ready():
+        return loading_library_view()
+
     current_playlist_title = title
     if "playlist" in uri:
-        return LibraryItem(title,uri,"playlist")
+        return LibraryItem(title, uri, "playlist")
     if "album" in uri:
-        return LibraryItem(title,uri,"album")
+        return LibraryItem(title, uri, "album")
     if "artist" in uri:
-        return LibraryItem(title,uri,"artist")
+        return LibraryItem(title, uri, "artist")
     else:
-        return LibraryItem(title,uri,"liked")
+        return LibraryItem(title, uri, "liked")
+
 
 def fetch_song(item):
     song_title, artist_name = item
     try:
         title, artist, _, vid_id = yt.search_one(f"{song_title} ,{artist_name}")
         print(f"Fetched Song: Title: {title}, Artist: {artist}")
+        return [title, artist, True, vid_id]
     except Exception as e:
-        print(e)
-    return [title, artist, True, vid_id]
+        print(f"Failed to fetch '{song_title}' - '{artist_name}': {e}")
+        # Return a placeholder so the worker pool never crashes and the
+        # remaining songs still get processed; left unselected with no video.
+        return ["", "", False, None]
 
 
 def fetch_equivalents(uri: str):
     global spot, yt, new_playlist
+    if not session_ready():
+        return
+
     if "playlist" in uri:
         items, _ = spot.get_playlist(uri)
     elif "album" in uri:
@@ -171,75 +295,143 @@ def fetch_equivalents(uri: str):
         items, _ = spot.get_artists(uri)
     else:
         items, _ = spot.get_liked()
-    
+    if not isinstance(items, list):
+        print(f"Spotify returned error {items} while fetching {uri}.")
+        return
+
     new_playlist = {"title": "", "desc": "", "items": []}
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = executor.map(fetch_song, items)
-        new_playlist['items'].extend(results)
+        new_playlist["items"].extend(results)
 
 
 @dataclass
 class LibraryItem:
     title: str
     uri: str
-    uri_type:str
+    uri_type: str
 
     def __ft__(self):
         global spot, old_playlist
+        if not session_ready():
+            return loading_library_view()
+
         if self.uri_type == "playlist":
             items, _ = spot.get_playlist(self.uri)
         elif self.uri_type == "album":
             items, _ = spot.get_albums(self.uri)
         elif self.uri_type == "artist":
-            items , _ = spot.get_artists(self.uri)
+            items, _ = spot.get_artists(self.uri)
         else:
             items, _ = spot.get_liked()
+        if not isinstance(items, list):
+            return spotify_error_view(self.title, items)
 
         old_playlist = items
         layout = Div(
             Titled(f"{self.title} | {self.uri_type.title()}"),
-            P("Click on the button at the end of the page to start the converting process."),
-            P("Once you click it, wait until all the songs have been fetched. After that:"),
+            P(
+                "Click on the button at the end of the page to start the converting process."
+            ),
+            P(
+                "Once you click it, wait until all the songs have been fetched. After that:"
+            ),
             Ul(
                 Li("Deselct any songs you don't want to be added to the new playlist."),
-                Li("Redo the prediction for any incorrect songs by clicking the refresh button."),
-                Li("Once you are satisfied, click the 'Save Selection' button to save your selection."),
+                Li(
+                    "Redo the prediction for any incorrect songs by clicking the refresh button."
+                ),
+                Li(
+                    "Once you are satisfied, click the 'Save Selection' button to save your selection."
+                ),
             ),
             # creating just a table for now, easy to debug
             Table(
-                Tr(Th("Original Title"), Th("Original Artists"), Th("New Title"), Th("New Artists")),
-                *[Tr(Td(item[0]), Td(item[1]), Td("",cls="yt-title"), Td("", cls="yt-artists")) for item in items],
-                id="#item-table"
+                Tr(
+                    Th("Original Title"),
+                    Th("Original Artists"),
+                    Th("New Title"),
+                    Th("New Artists"),
+                ),
+                *[
+                    Tr(
+                        Td(item[0]),
+                        Td(item[1]),
+                        Td("", cls="yt-title"),
+                        Td("", cls="yt-artists"),
+                    )
+                    for item in items
+                ],
+                id="#item-table",
             ),
             Button("Go Back", hx_get="/library", hx_target=".main-view"),
-            Button("Fetch All YouTube Equivalents", hx_get=f"/start_fetch_equi?uri={self.uri}", hx_swap="outerHTML"),
-            Div(cls="yt-info-box")
+            Button(
+                "Fetch All YouTube Equivalents",
+                hx_get=f"/start_fetch_equi?uri={self.uri}",
+                hx_swap="outerHTML",
+            ),
+            Div(cls="yt-info-box"),
         )
         return layout
+
 
 @app.get("/new_table")
 def get():
     global new_playlist, old_playlist
     table = Table(
-                    Tr(Th("Selected"),Th("Original Title"), Th("Original Artists"), Th("New Title"), Th("New Artists")),
-                    *[
-                        Tr(
-                            Td(Input(type="checkbox", data_idx=NotStr(str(idx)),checked=new_playlist["items"][idx][2] if len(new_playlist["items"]) >= idx+1 else False)),
-                            Td(item[0]), Td(item[1]), 
-                            Td(new_playlist["items"][idx][0] if len(new_playlist["items"]) >= idx+1 else "",cls="yt-title"), 
-                            Td(new_playlist["items"][idx][1] if len(new_playlist["items"]) >= idx+1 else "", cls="yt-artists"),
-                            Td(Button(I(cls="nf nf-md-reload"),title="Redo-Prediction",
-                                      hx_get = f"/refetch_item?title={quote(item[0])}&artist={quote(item[1])}&filter_str={quote(new_playlist['items'][idx][0] + ', ' + new_playlist['items'][idx][1])}&idx={idx}",
-                                      hx_swap="outerHTML",
-                                      hx_target="table")) if len(new_playlist["items"]) >= idx+1 else None
-                        ) 
-                        for idx, item in enumerate(old_playlist)
-                    ],
-                    id="#item-table"
+        Tr(
+            Th("Selected"),
+            Th("Original Title"),
+            Th("Original Artists"),
+            Th("New Title"),
+            Th("New Artists"),
+        ),
+        *[
+            Tr(
+                Td(
+                    Input(
+                        type="checkbox",
+                        data_idx=NotStr(str(idx)),
+                        checked=new_playlist["items"][idx][2]
+                        if len(new_playlist["items"]) >= idx + 1
+                        else False,
+                    )
+                ),
+                Td(item[0]),
+                Td(item[1]),
+                Td(
+                    new_playlist["items"][idx][0]
+                    if len(new_playlist["items"]) >= idx + 1
+                    else "",
+                    cls="yt-title",
+                ),
+                Td(
+                    new_playlist["items"][idx][1]
+                    if len(new_playlist["items"]) >= idx + 1
+                    else "",
+                    cls="yt-artists",
+                ),
+                Td(
+                    Button(
+                        I(cls="nf nf-md-reload"),
+                        title="Redo-Prediction",
+                        hx_get=f"/refetch_item?title={quote(item[0])}&artist={quote(item[1])}&filter_str={quote(new_playlist['items'][idx][0] + ', ' + new_playlist['items'][idx][1])}&idx={idx}",
+                        hx_swap="outerHTML",
+                        hx_target="table",
+                    )
                 )
+                if len(new_playlist["items"]) >= idx + 1
+                else None,
+            )
+            for idx, item in enumerate(old_playlist)
+        ],
+        id="#item-table",
+    )
     if len(new_playlist["items"]) == len(old_playlist):
-        selected_ids = [idx for idx, item in enumerate(new_playlist["items"]) if item[2] == True]
-        params = {'selectedIds': selected_ids}
+        selected_ids = [
+            idx for idx, item in enumerate(new_playlist["items"]) if item[2] == True
+        ]
+        params = {"selectedIds": selected_ids}
         hx_get = f"/save_selection?{urlencode(params, doseq=True)}"
         script = """document.addEventListener('change', function(e) {
     if (e.target.type === 'checkbox') {
@@ -267,75 +459,119 @@ def get():
         }
     }
 });"""
-        return table,Button("Save Selection",id ="update-btn",hx_swap_oob="true",
-                            hx_get=hx_get,hx_target=".yt-info-box"),Script(script)
-    else: return table,Button("Fetching...",id ="update-btn",hx_swap_oob="true", disabled=True,
-                            hx_get="/new_table", 
-                            hx_trigger="every 0.5s",
-                            hx_swap="outerHTML",
-                            hx_target="table")
+        return (
+            table,
+            Button(
+                "Save Selection",
+                id="update-btn",
+                hx_swap_oob="true",
+                hx_get=hx_get,
+                hx_target=".yt-info-box",
+            ),
+            Script(script),
+        )
+    else:
+        return table, Button(
+            "Fetching...",
+            id="update-btn",
+            hx_swap_oob="true",
+            disabled=True,
+            hx_get="/new_table",
+            hx_trigger="every 0.5s",
+            hx_swap="outerHTML",
+            hx_target="table",
+        )
+
 
 @app.get("/start_fetch_equi")
-def get(uri:str):
-    threading.Thread(target=fetch_equivalents, daemon=True,kwargs={'uri':uri}).start()
-    return Button("Fetching...",
-                    hx_get="/new_table", 
-                    hx_trigger="every 2s",
-                    hx_swap="outerHTML",
-                    hx_target="table",
-                    id = "update-btn",
-                    disabled=True)
+def get(uri: str):
+    threading.Thread(target=fetch_equivalents, daemon=True, kwargs={"uri": uri}).start()
+    return Button(
+        "Fetching...",
+        hx_get="/new_table",
+        hx_trigger="every 2s",
+        hx_swap="outerHTML",
+        hx_target="table",
+        id="update-btn",
+        disabled=True,
+    )
+
 
 @app.get("/refetch_item")
-def get(title:str,artist:str,filter_str:str,idx:int):
-    global yt,new_playlist
-    new_title, new_artist, _, video_id = yt.search_one_except(f"{title} {artist}",filter_str)
-    new_playlist['items'][idx][0] = new_title
-    new_playlist['items'][idx][1] = new_artist
-    new_playlist['items'][idx][-1] = video_id
+def get(title: str, artist: str, filter_str: str, idx: int):
+    global yt, new_playlist
+    new_title, new_artist, _, video_id = yt.search_one_except(
+        f"{title} {artist}", filter_str
+    )
+    new_playlist["items"][idx][0] = new_title
+    new_playlist["items"][idx][1] = new_artist
+    new_playlist["items"][idx][-1] = video_id
     return RedirectResponse("/new_table")
 
-@app.get('/bg_save')
+
+@app.get("/bg_save")
 def save_selection(req):
     global new_playlist
     selected_ids = req.query_params.multi_items()
-    selected_ids = [int(value) for key, value in selected_ids if key == 'selectedIds']
-    for idx,_ in enumerate(new_playlist["items"]):
+    selected_ids = [int(value) for key, value in selected_ids if key == "selectedIds"]
+    for idx, _ in enumerate(new_playlist["items"]):
         if idx not in selected_ids:
             new_playlist["items"][idx][2] = False
         else:
             new_playlist["items"][idx][2] = True
 
-@app.get('/save_selection')
+
+@app.get("/save_selection")
 def save_selection(req):
     # Gets automatically as list
     global new_playlist
     selected_ids = req.query_params.multi_items()
-    selected_ids = [int(value) for key, value in selected_ids if key == 'selectedIds']
-    for idx,_ in enumerate(new_playlist["items"]):
+    selected_ids = [int(value) for key, value in selected_ids if key == "selectedIds"]
+    for idx, _ in enumerate(new_playlist["items"]):
         if idx not in selected_ids:
             new_playlist["items"][idx][2] = False
         else:
             new_playlist["items"][idx][2] = True
-    form = Form(Label('Playlist Title',Input(type="text", name="title", value=current_playlist_title)),
-                Label('Description (Optional)',Input(type="textarea", name="desc")),
-                Button("Submit"),
-                action="/make_playlist", method="post")
+    form = Form(
+        Label(
+            "Playlist Title",
+            Input(type="text", name="title", value=current_playlist_title),
+        ),
+        Label("Description (Optional)", Input(type="textarea", name="desc")),
+        Button("Submit"),
+        action="/make_playlist",
+        method="post",
+    )
 
-    return P("Your selection has been saved. If required change the title and description of the playlist and click submit."), form
+    return P(
+        "Your selection has been saved. If required change the title and description of the playlist and click submit."
+    ), form
 
 
-@app.post('/make_playlist')
-def make_playlist(title:str,desc:str=""):
+@app.post("/make_playlist")
+def make_playlist(title: str, desc: str = ""):
     global new_playlist, yt
     vid_ids = [item[-1] for item in new_playlist["items"] if item[2] == True]
-    if yt.create_and_add(title,desc,vid_ids):
-        return (H2("Successfully Created Your Playlist!"),
-                P("You can now view your new playlist on YouTube Music."),
-                P("You will be now redirected to the home page in 10 seconds."),
-                Script("setTimeout(() => {window.location.href = '/';}, 10000)"))
+    try:
+        created = yt.create_and_add(title, desc, vid_ids)
+    except YTMusicAuthError:
+        return (
+            H2("YouTube Music Login Needed"),
+            P("YouTube Music rejected the playlist creation request."),
+            P("In the Chrome window opened by this app, sign in at music.youtube.com, then restart from the Start button."),
+            Button("Restart Login Flow", hx_get="/start", hx_target=".main-view"),
+        )
+
+    if created:
+        return (
+            H2("Successfully Created Your Playlist!"),
+            P("You can now view your new playlist on YouTube Music."),
+            P("You will be now redirected to the home page in 10 seconds."),
+            Script("setTimeout(() => {window.location.href = '/';}, 10000)"),
+        )
     else:
         return P("Some error occured.")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     serve()

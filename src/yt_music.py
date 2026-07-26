@@ -2,13 +2,20 @@ import os
 import json 
 import requests
 import ytmusicapi
+from ytmusicapi.exceptions import YTMusicServerError
 from thefuzz import process, fuzz
 from src.setup import SetupManager
+
+
+class YTMusicAuthError(Exception):
+    pass
 
 class YT_Music:
     def __init__(self):
         if not os.path.exists('yt_headers.json'):
             self.session = SetupManager()
+            self.session.yt_cookies = None
+            self.session._get_ytm_cookies()
             self.cookies = self.session.yt_cookies
             with open('yt_headers.json', 'w') as f:
                 json.dump(self.cookies,f)
@@ -93,19 +100,45 @@ class YT_Music:
     def add_multiple_to_playlist(self,playlist_id,songs):
         if isinstance(songs[-1],tuple):
             songs = [songs[-1] for song in songs]
-        status = self.yt_sess.add_playlist_items(playlist_id,songs)
+        try:
+            status = self.yt_sess.add_playlist_items(playlist_id,songs)
+        except YTMusicServerError as error:
+            if "401" in str(error) or "Unauthorized" in str(error):
+                if os.path.exists('yt_headers.json'):
+                    os.remove('yt_headers.json')
+                raise YTMusicAuthError(
+                    "YouTube Music is not authorized to add songs to playlists."
+                ) from error
+            raise
         if status['status'] == 'STATUS_FAILED':
             # if duplicates, then prolly duplicates in user's library too, so just add it aswell
-            status = self.yt_sess.add_playlist_items(playlist_id,songs,duplicates=True)
+            try:
+                status = self.yt_sess.add_playlist_items(playlist_id,songs,duplicates=True)
+            except YTMusicServerError as error:
+                if "401" in str(error) or "Unauthorized" in str(error):
+                    if os.path.exists('yt_headers.json'):
+                        os.remove('yt_headers.json')
+                    raise YTMusicAuthError(
+                        "YouTube Music is not authorized to add songs to playlists."
+                    ) from error
+                raise
             if status['status'] == 'STATUS_FAILED':
                 return False
         return True
     
     def create_playlist(self,name,desc):
-        pl_id =  self.yt_sess.create_playlist(name, desc)
+        try:
+            pl_id =  self.yt_sess.create_playlist(name, desc)
+        except YTMusicServerError as error:
+            if "401" in str(error) or "Unauthorized" in str(error):
+                if os.path.exists('yt_headers.json'):
+                    os.remove('yt_headers.json')
+                raise YTMusicAuthError(
+                    "YouTube Music is not authorized to create playlists."
+                ) from error
+            raise
         if pl_id: return pl_id
 
     def create_and_add(self,playlist_name,desc,songs):
         playlist_id = self.create_playlist(playlist_name,desc)
         return self.add_multiple_to_playlist(playlist_id,songs)
-
