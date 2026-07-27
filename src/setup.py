@@ -408,7 +408,23 @@ class SetupManager:
             elif data['__typename'] == 'Playlist':
                 uri = data['uri']
                 target = 'Playlists'
-                entry = {'name': data['name'], 'uri': uri}
+                owner_obj = data.get('ownerV2', {}).get('data', {}) or data.get('owner', {}) or {}
+                owner_name = owner_obj.get('name') or owner_obj.get('username') or ''
+                is_owner_flag = data.get('isOwner') or owner_obj.get('isCurrentUser')
+                if is_owner_flag is not None:
+                    is_own = bool(is_owner_flag)
+                elif owner_name:
+                    is_own = owner_name.lower() not in {'spotify', 'spotify soundtrack', 'editorial'}
+                else:
+                    is_own = True
+                    owner_name = 'You'
+
+                entry = {
+                    'name': data['name'],
+                    'uri': uri,
+                    'owner': owner_name or 'You',
+                    'is_own': is_own,
+                }
             else:
                 print(f"Unsuported type: {data['__typename']}\nMore info: {item}")
                 return

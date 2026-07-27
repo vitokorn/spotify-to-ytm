@@ -5,7 +5,7 @@ import time
 from src.setup import SetupManager
 
 class SpotifyManager:
-    CACHE_VERSION = 4
+    CACHE_VERSION = 5
     LIKED_RATE_LIMIT_COOLDOWN = 30
     LIKED_CACHE_FILE = 'liked_cache.json'
 
@@ -51,23 +51,61 @@ class SpotifyManager:
             self.persisted_queries = self.session.persisted_qs
             self.liked_uri = getattr(self.session, 'liked_uri', '')
             self.liked_variables = getattr(self.session, 'liked_variables', {})
+            self._save_auth_file()
+        
+        requests.get("http://localhost:5001/initialized")
+
+    def _save_auth_file(self):
+        try:
             with open('spotify_auth.json', 'w') as f:
                 json.dump({
                    'client_token'       :   self.client_token,
                    'authorization'      :   self.authorization,
                    'library'            :   self.library,
                    'persisted_queries'  :   self.persisted_queries,
-                   'operation_names'     :   self.operation_names,
+                   'operation_names'    :   self.operation_names,
                    'spotify_request_headers' : self.spotify_request_headers,
                    'liked_uri'          :   self.liked_uri,
                    'liked_variables'    :   self.liked_variables,
                    'cache_version'      :   self.CACHE_VERSION,
-                   'expires'            :   time.time() + 24*60*60 # tokens valid for 24 hours
-                },f)
-        
-        requests.get("http://localhost:5001/initialized")
+                   'expires'            :   time.time() + 24*60*60
+                }, f)
+        except OSError:
+            pass
 
-    def _get_res_from_spot(self, operation, persisted, uri=None, limit=100, offset=0):
+    def refresh_library(self):
+        try:
+            session = getattr(self, 'session', None) or SetupManager()
+            self.session = session
+            self.client_token, self.authorization = session.get_library()
+            self.library = session.library
+            self._save_auth_file()
+            return True, "Library refreshed!"
+        except Exception as e:
+            print(f"Error refreshing library: {e}")
+            return False, str(e)
+
+    def reauthenticate(self):
+        try:
+            if os.path.exists('spotify_auth.json'):
+                try:
+                    os.remove('spotify_auth.json')
+                except OSError:
+                    pass
+            session = SetupManager()
+            self.session = session
+            self.client_token, self.authorization = session.get_library()
+            self.library = session.library
+            self.spotify_request_headers = getattr(session, 'spotify_request_headers', {})
+            self.operation_names = getattr(session, 'operation_names', {})
+            self.persisted_queries = getattr(session, 'persisted_qs', {})
+            self._save_auth_file()
+            return True
+        except Exception as e:
+            print(f"Reauthentication failed: {e}")
+            return False
+
+    def _get_res_from_spot(self, operation, persisted, uri=None, limit=100, offset=0, retried_401=False):
         if not persisted:
             return f"missing persisted query for {operation}", False
 
@@ -104,6 +142,10 @@ class SpotifyManager:
         if response.status_code == 200:
             res_j = json.loads(response.text)
             return res_j, True
+        if response.status_code == 401 and not retried_401:
+            print("Spotify token expired (401). Re-authenticating automatically...")
+            if self.reauthenticate():
+                return self._get_res_from_spot(operation, persisted, uri, limit, offset, retried_401=True)
         return response.status_code, False
     
     @staticmethod

@@ -97,11 +97,18 @@ class YT_Music:
         choices = [tuple(list(choice) + [search_dict[choice[0]]]) for choice in choices]
         return choices
         
-    def add_multiple_to_playlist(self,playlist_id,songs):
-        if isinstance(songs[-1],tuple):
-            songs = [songs[-1] for song in songs]
+    def add_multiple_to_playlist(self, playlist_id, songs):
+        if not songs:
+            return False
+        songs = [s for s in songs if s]
+        if not songs:
+            return False
+        if isinstance(songs[-1], tuple):
+            songs = [song[-1] for song in songs]
+
         try:
-            status = self.yt_sess.add_playlist_items(playlist_id,songs)
+            status = self.yt_sess.add_playlist_items(playlist_id, songs, duplicates=True)
+            return True
         except YTMusicServerError as error:
             if "401" in str(error) or "Unauthorized" in str(error):
                 if os.path.exists('yt_headers.json'):
@@ -109,22 +116,16 @@ class YT_Music:
                 raise YTMusicAuthError(
                     "YouTube Music is not authorized to add songs to playlists."
                 ) from error
-            raise
-        if status['status'] == 'STATUS_FAILED':
-            # if duplicates, then prolly duplicates in user's library too, so just add it aswell
-            try:
-                status = self.yt_sess.add_playlist_items(playlist_id,songs,duplicates=True)
-            except YTMusicServerError as error:
-                if "401" in str(error) or "Unauthorized" in str(error):
-                    if os.path.exists('yt_headers.json'):
-                        os.remove('yt_headers.json')
-                    raise YTMusicAuthError(
-                        "YouTube Music is not authorized to add songs to playlists."
-                    ) from error
-                raise
-            if status['status'] == 'STATUS_FAILED':
-                return False
-        return True
+            if "409" in str(error) or "Conflict" in str(error):
+                try:
+                    unique_songs = list(dict.fromkeys(songs))
+                    status = self.yt_sess.add_playlist_items(playlist_id, unique_songs, duplicates=True)
+                    return True
+                except Exception as inner_err:
+                    print(f"Failed adding deduplicated songs: {inner_err}")
+                    return False
+            print(f"Error adding items to YouTube Music playlist: {error}")
+            return False
     
     def create_playlist(self,name,desc):
         try:
